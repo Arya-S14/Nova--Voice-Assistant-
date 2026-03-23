@@ -287,6 +287,10 @@ for k, v in {
     if k not in st.session_state:
         st.session_state[k] = v
 
+# 🔥 FIX: Intro state
+if "introduced" not in st.session_state:
+    st.session_state.introduced = False
+
 # ── System prompt ──────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are NOVA, an intelligent voice assistant exactly like Siri — warm, natural, helpful, and fully conversational.
 
@@ -516,8 +520,9 @@ with st.sidebar:
         try:
             st.session_state.groq_client = Groq(api_key=api_key)
             st.success("✅ Connected")
-        except Exception as e:
-            st.error(f"❌ {e}")
+        except Exception:
+            st.session_state.groq_client = None
+            st.error("❌ Invalid API key. Please re-enter your API key.")
     else:
         st.caption("Free key → [console.groq.com](https://console.groq.com)")
 
@@ -621,15 +626,24 @@ st.markdown(f"""
 # ── Get last speak + auto-open URL ────────────────────────────────────────────
 auto_open_url = ""
 last_speak = ""
-for m in reversed(st.session_state.messages):
-    if m["role"] == "assistant":
-        if not auto_open_url and m.get("open_url"):
-            auto_open_url = m["open_url"]
-        raw = m.get("speak", m["content"])
-        raw = re.sub(r'<[^>]+>', '', str(raw))
-        raw = re.sub(r'[*#]', '', raw).strip()[:280]
-        last_speak = raw
-        break
+
+# 🔥 FIX: AUTO INTRO LOGIC
+if not st.session_state.introduced:
+    if st.session_state.groq_client:
+        last_speak = "Hi, I am NOVA, your voice assistant. How can I help you?"
+        st.session_state.introduced = True
+    else:
+        last_speak = "Please enter your Groq API key to get started."
+else:
+    for m in reversed(st.session_state.messages):
+        if m["role"] == "assistant":
+            if not auto_open_url and m.get("open_url"):
+                auto_open_url = m["open_url"]
+            raw = m.get("speak", m["content"])
+            raw = re.sub(r'<[^>]+>', '', str(raw))
+            raw = re.sub(r'[*#]', '', raw).strip()[:280]
+            last_speak = raw
+            break
 
 # ── FIX 2 & 3: Voice widget — safe JS, no Python/JS mixup ────────────────────
 # All JS is inside a proper HTML string — no Python execution of JS code
@@ -880,15 +894,30 @@ function doSpeak() {{
        || vs[0];
     if (pick) u.voice = pick;
     mode('S');
-    u.onend = function() {{ mode(''); }};
+    u.onend = function() {{ mode('');
+        // 🔥 FIX: auto start listening after speaking
+        setTimeout(function() {{
+            if (!listening) {{
+                startR();
+            }}
+        }}, 800);
+    }};
     u.onerror = function() {{ mode(''); }};
     window.speechSynthesis.speak(u);
 }}
  
 if (window.speechSynthesis.getVoices().length > 0) {{
-    setTimeout(doSpeak, 600);
+    setTimeout(function() {{
+        doSpeak();
+        setTimeout(startR, 1000);
+    }}, 600);
 }} else {{
-    window.speechSynthesis.onvoiceschanged = function() {{ setTimeout(doSpeak, 400); }};
+    window.speechSynthesis.onvoiceschanged = function() {{
+        setTimeout(function() {{
+            doSpeak();
+            setTimeout(startR, 1000);
+        }}, 400);
+    }};
 }}
  
 var rec = null, listening = false, txt = '', autoT = null;
@@ -933,6 +962,11 @@ function toggle() {{
 }}
  
 function startR() {{
+    // 🔥 FIX: force mic permission
+    navigator.mediaDevices.getUserMedia({{ audio: true }})
+    .catch(function() {{
+        document.getElementById('stText').textContent = '⚠️ Please allow microphone access';
+    }});
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {{
         document.getElementById('stText').textContent = '❌ Use Chrome or Edge for voice input';
