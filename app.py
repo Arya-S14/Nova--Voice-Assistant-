@@ -943,7 +943,7 @@ if (window.speechSynthesis.getVoices().length > 0) {{
     }};
 }}
  
-var rec = null, listening = false, txt = '', autoT = null;
+var rec = null, listening = false, txt = '';
  
 function mode(m) {{
     var o    = document.getElementById('orb');
@@ -1006,23 +1006,25 @@ function startR() {{
     rec.lang = 'en-US'; rec.maxAlternatives = 3;
  
     rec.onstart = function() {{ listening = true; mode('L'); }};
+
+    // ── FIX 1: Only send on final result, no unreliable autoT timer ──────────
     rec.onresult = function(e) {{
-        var interim = '', final = '';
+        var final = '';
         for (var i = e.resultIndex; i < e.results.length; i++) {{
-            if (e.results[i].isFinal) final += e.results[i][0].transcript;
-            else interim += e.results[i][0].transcript;
+            if (e.results[i].isFinal) {{
+                final += e.results[i][0].transcript;
+            }}
         }}
-        txt = final || interim;
-        var tb = document.getElementById('tbox');
-        tb.textContent = '"' + txt + '"';
-        tb.style.display = 'block';
-        document.getElementById('sendBtn').style.display = 'block';
-        document.getElementById('cancelBtn').style.display = 'block';
         if (final && final.trim()) {{
-            clearTimeout(autoT);
-            autoT = setTimeout(function() {{ doSend(); }}, 600);
+            txt = final.trim();
+            var tb = document.getElementById('tbox');
+            tb.textContent = '"' + txt + '"';
+            tb.style.display = 'block';
+            // 🔥 FIX: call doSend directly on final — no delay timer
+            doSend();
         }}
     }};
+
     rec.onerror = function(e) {{
         listening = false; mode('');
         if (e.error !== 'no-speech') {{
@@ -1039,39 +1041,58 @@ function stopR() {{
     if (rec) {{ try {{ rec.stop(); }} catch(e) {{}} }}
 }}
  
+// ── FIX 2: Stronger doSend() — multi-strategy Streamlit injection ─────────────
 function doSend() {{
-    if (!txt.trim()) return;
-    clearTimeout(autoT); stopR();
+    if (!txt || !txt.trim()) return;
+    stopR();
     mode('P');
     document.getElementById('sendBtn').style.display = 'none';
     document.getElementById('cancelBtn').style.display = 'none';
     var t = txt.trim();
- 
+
     try {{
         var pd = window.parent.document;
-        var ins = pd.querySelectorAll('input[type="text"]');
+        var inputs = pd.querySelectorAll('input[type="text"]');
         var inp = null;
-        ins.forEach(function(i) {{
+
+        // Prefer placeholder-matched input, fallback to last text input
+        inputs.forEach(function(i) {{
             if (i.placeholder && i.placeholder.toLowerCase().includes('speak')) inp = i;
         }});
-        if (!inp && ins.length > 0) inp = ins[ins.length - 1];
+        if (!inp && inputs.length > 0) inp = inputs[inputs.length - 1];
+
         if (inp) {{
+            // Use native value setter to trigger React/Streamlit change detection
             var nv = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
             nv.call(inp, t);
-            inp.focus(); inp.value = t;
+            inp.focus();
             inp.dispatchEvent(new Event('input',  {{ bubbles: true }}));
             inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
             setTimeout(function() {{
-                if (inp.form) {{ inp.form.requestSubmit(); }}
-                var btns = pd.querySelectorAll(
-                    'button[kind="primaryFormSubmit"],button[data-testid="baseButton-primaryFormSubmit"]'
+                // Strategy 1: requestSubmit on the form
+                if (inp.form) {{
+                    try {{ inp.form.requestSubmit(); }} catch(e) {{}}
+                }}
+                // Strategy 2: click the Send button directly
+                var btns = pd.querySelectorAll('button');
+                btns.forEach(function(btn) {{
+                    if (btn.innerText && btn.innerText.trim().toLowerCase().includes('send')) {{
+                        btn.click();
+                    }}
+                }});
+                // Strategy 3: Streamlit-specific submit button selectors
+                var stBtns = pd.querySelectorAll(
+                    'button[kind="primaryFormSubmit"], button[data-testid="baseButton-primaryFormSubmit"]'
                 );
-                if (btns.length > 0) {{ btns[0].click(); }}
+                if (stBtns.length > 0) {{ stBtns[0].click(); }}
             }}, 180);
         }}
-    }} catch(e) {{ console.error('Input injection:', e); }}
- 
+    }} catch(e) {{ console.error('Input injection error:', e); }}
+
+    // Always copy to clipboard as fallback
     navigator.clipboard.writeText(t).catch(function() {{}});
+
     setTimeout(function() {{
         document.getElementById('okB').style.display = 'inline';
         document.getElementById('cpB').style.display = 'inline';
@@ -1082,7 +1103,7 @@ function doSend() {{
 }}
  
 function doCancel() {{
-    txt = ''; clearTimeout(autoT); stopR();
+    txt = ''; stopR();
     document.getElementById('tbox').style.display = 'none';
     document.getElementById('sendBtn').style.display = 'none';
     document.getElementById('cancelBtn').style.display = 'none';
